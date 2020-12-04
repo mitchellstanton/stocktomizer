@@ -1,5 +1,5 @@
 # stocktomizer
-stock price movements
+
 This repository archives an evolving project intended for developing an experimental investment stategy: 
 1) identifying stocks that have favorable month to month price movements using machine learning
 2) visualizing price movements 
