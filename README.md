@@ -6,15 +6,9 @@ This repository archives an evolving project intended for developing an experime
 3) identify entry and exit points
 
 Notes:
-RE: 1) price movements are determined by changes in each month's closing price
-
-RE: 2) price movements are visualized in different graphical structures
-
-RE: 3) entry and exit points are not yet objectively determined 
-
-RE: 4) financial data was retrieved from Alpha Vantage
-
-
-Additionally, I have attempted to implement tidyverse methodology in structuring R scripts.
-
-This is an on-going project. 
+1) price movements are determined by changes in each month's closing price
+2) price movements are visualized in different graphical structures
+3) entry and exit points are not yet objectively determined 
+4) financial data was retrieved from Alpha Vantage
+5) I have attempted to implement tidyverse methodology in structuring R scripts.
+6) This is an on-going project. 
