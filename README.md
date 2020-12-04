@@ -1,0 +1,2 @@
+# stocktomizer
+stock price movements
