@@ -1,0 +1,213 @@
+---
+title: "Stock-tomizer"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r, include=FALSE} 
+# PRE-IMPORT 
+# load packages 
+library(alphavantager)
+library(data.table)
+library(lubridate)
+library(shiny)
+library(tidyverse)
+library(ggpubr)
+library(readxl)
+
+# set constants
+years_before <- 10
+# find earliest date from "y" years ago
+earliest_date <- lubridate::floor_date(Sys.Date() - years(years_before), unit = "year") 
+# change this for system sleep time to speed up or slow down import
+sleep <- 30 
+current_day_of_month <- lubridate::day(Sys.Date())
+last_day_of_month <- lubridate::ceiling_date(Sys.Date(), unit = "month") - 1
+current_time <- lubridate::now(tzone = "US/Eastern")
+start_of_day <- lubridate::hms("09:30:00")
+end_of_day <- lubridate::hms("16:00:00")
+# data: ticker list chosen by selection script
+month_tickers <- readxl::read_excel("choices.xlsx") %>% dplyr::filter(Time_Series == "Monthly") %>% dplyr::pull(Ticker)
+other_tickers <- c(month_tickers, c("BDX", "HII", "VYM", "JPM"))
+ticks <- unique(c(other_tickers))
+
+# data: list
+monthly_data <- list()
+for (i in seq_along(ticks)) {
+  
+  # load api key
+  av_api_key("QNFRUV3KCUNEEMVN")
+  
+  # import data
+  monthly_raw_data <- av_get(symbol = ticks[[i]], av_fun = "TIME_SERIES_MONTHLY_ADJUSTED", outputsize = "full")
+  
+  # clean, tidy, transform 001
+  monthly_data[[i]] <- monthly_raw_data %>% 
+    filter(timestamp >= earliest_date) %>% 
+    mutate(Ticker = ticks[[i]],
+           Date = timestamp, 
+           Month = lubridate::month(timestamp, label = TRUE, abbr = FALSE),
+           adj_factor = adjusted_close/close,
+           Low = low*adj_factor,
+           High = high*adj_factor,
+           Prev_Close = dplyr::lag(adjusted_close),
+           `%Current` = ((adjusted_close - Prev_Close)/Prev_Close)*100,
+           `%up` = ((High - Prev_Close)/Prev_Close)*100,
+           `%down` = ((Low - Prev_Close)/Prev_Close)*100,
+           `%up-down Range` = `%up` - `%down`,
+           `%up Percentile` = ecdf(`%up`)(`%up`),
+           `%down Percentile` = ecdf(`%down`)(`%down`),
+           `%up-down Range Percentile` = ecdf(`%up-down Range`)(`%up-down Range`)) %>%
+    drop_na() %>% 
+    rename(`Previous Close` = Prev_Close)
+  
+  # wait before next iteration
+  Sys.sleep(sleep + rnorm(1, mean = 0, sd = 1))
+}
+
+# data: dataframe
+monthly_dataframe <- rbindlist(monthly_data) 
+
+# CLEAN, TIDY, TRANSFORM
+# function: create table friendly data based upon INPUTS
+percentilizer_wide <- function(ticker, price) {
+  
+  # price: corresponds to INPUT value
+  # NOTES: Different structure from percentilizer_long
+  
+  monthly_dataframe %>%  
+    filter(Ticker == ticker) %>%
+    mutate(`%Change` = (price - `Previous Close`)/`Previous Close`*100,
+           `Avg. %up` = mean(`%up`),
+           `Avg. %down` = mean(`%down`),
+           `SD %up` = sd(`%up`),
+           `SD %down` = sd(`%down`),
+           `New High Percentile` = ecdf(`%up`)(`%Change`),
+           `New Low Percentile` = ecdf(`%down`)(`%Change`)) %>% 
+    select(Ticker, Date, Month, Low, High, `Previous Close`, `%Current`, `%Change`, `%down`, `%up`, `Avg. %down`, `SD %down`, `Avg. %up`, `SD %up`, `%down Percentile`, `%up Percentile`, `%Change`, `New High Percentile`, `New Low Percentile`) 
+  
+} 
+
+# function: create plotting friendly data based upon INPUTS
+percentilizer_long <- function(ticker) {
+  
+  # NOTES: Different structure from percentilizer_wide
+  monthly_dataframe %>% 
+    filter(Ticker == ticker) %>%
+    select(Ticker, `%up`, `%down`, `%up Percentile`, `%down Percentile`) %>% 
+    pivot_longer(cols = `%up`:`%down`, names_to = "distribution", values_to = "percent") %>%
+    pivot_longer(cols = `%up Percentile`:`%down Percentile`, names_to = "percentile", values_to = "Percentile") 
+}
+```
+
+
+
+  
+Sidebar {.sidebar}
+=== 
+```{r}
+# INPUTS: CHOOSE TICKERS AND VALUES
+# Choose from tickers with preferred DAY distributions
+radioButtons(inputId = "ticker", label = "Ticker:", choices = ticks, selected = ticks[[1]])
+# Choose price value to see associated %change from the most recent close, and previous week and month closes
+numericInput(inputId = "price", label = "Price:", value = "")
+```
+
+
+Monthly Trends 
+=== 
+
+```{r}
+# OUTPUTS: DAILY VALUES AND DISTRIBUTIONS 
+# NOTE: The night before the next day, week, or month `Previous Close` is not the correct value. It is lagged. Those nights we want the most recent close.
+# DATA
+# data: combine wide-format time series
+dat_wide <- reactive({
+  percentilizer_wide(input$ticker, input$price) %>% 
+    filter(Date == max(Date)) %>% 
+    select(-Ticker, -Date)
+})
+
+# data: combine long-format time series
+dat_long <- reactive({percentilizer_long(input$ticker)})
+
+# data: for long term price movements
+movements <- reactive({
+  df <- monthly_dataframe %>% filter(Ticker == input$ticker) %>% mutate(Direction = as.logical(`%Current` > 0))
+  streaks_calculation <- rle(df$Direction)
+  streaks_vector <- rep(streaks_calculation$lengths, times = streaks_calculation$lengths)
+  df %>% 
+    cbind(streaks_vector) %>% 
+    mutate()
+})
+
+```
+
+
+Column {data-width=400}
+-------------------------------------
+
+### Quantiles
+```{r}    
+renderPlot({
+  ggplot(data = dat_long(), mapping = aes(x = Percentile, y = percent, col = distribution)) +
+    geom_point() +
+    geom_smooth() +
+    geom_rect(data = dat_wide(), mapping = aes(xmin = -Inf, xmax = Inf, ymin = `Avg. %down`, ymax = `Avg. %up`), alpha = 0.2, inherit.aes = FALSE) +
+    geom_rect(data = dat_wide(), mapping = aes(xmin = -Inf, xmax = Inf, ymin = `Avg. %up` - `SD %up`, ymax = `Avg. %up` + `SD %up`), alpha = 0.1, fill = "green", inherit.aes = FALSE) +
+    geom_rect(data = dat_wide(), mapping = aes(xmin = -Inf, xmax = Inf, ymin = `Avg. %down` - `SD %down`, ymax = `Avg. %down` + `SD %down`), alpha = 0.1, fill = "red", inherit.aes = FALSE) +
+    geom_hline(data = dat_wide(), mapping = aes(yintercept = `%Current`), size = 2) +
+    geom_hline(data = dat_wide(), mapping = aes(yintercept = `%Change`), linetype = "dashed", size = 2, col = "black") +
+    geom_hline(data = dat_wide(), mapping = aes(yintercept = `%up`), linetype = "dashed", col = "#00BFC4", size = 2) +
+    geom_hline(data = dat_wide(), mapping = aes(yintercept = `%down`), linetype = "dashed", col = "red", size = 2) +
+    theme_bw() +
+    labs(title = paste("Monthly", input$ticker, sep = ":")) 
+})
+```
+
+Column {data-width=600}
+-------------------------------------
+
+### Density
+
+```{r}
+renderPlot({
+  ggplot(data = dat_long(), mapping = aes(x = percent, fill = distribution)) +
+    geom_density(alpha = 0.6) +
+    geom_rect(data = dat_wide(), mapping = aes(ymin = -Inf, ymax = Inf, xmin = `Avg. %down`, xmax = `Avg. %up`), alpha = 0.2, inherit.aes = FALSE) +
+    geom_rect(data = dat_wide(), mapping = aes(ymin = -Inf, ymax = Inf, xmin = `Avg. %up` - `SD %up`, xmax = `Avg. %up` + `SD %up`), alpha = 0.1, fill = "green", inherit.aes = FALSE) +
+    geom_rect(data = dat_wide(), mapping = aes(ymin = -Inf, ymax = Inf, xmin = `Avg. %down` - `SD %down`, xmax = `Avg. %down` + `SD %down`), alpha = 0.1, fill = "red", inherit.aes = FALSE) +
+    geom_vline(data = dat_wide(), mapping = aes(xintercept = `%Current`), size = 2) +
+    geom_vline(data = dat_wide(), mapping = aes(xintercept = `%Change`), linetype = "dashed", size = 2, col = "black") +
+    geom_vline(data = dat_wide(), mapping = aes(xintercept = `%up`), linetype = "dashed", col = "#00BFC4", size = 2) +
+    geom_vline(data = dat_wide(), mapping = aes(xintercept = `%down`), linetype = "dashed", col = "red", size = 2) +
+    theme_bw() +
+    labs(title = paste("Monthly", input$ticker, sep = ":")) 
+})
+```
+
+
+### Movements
+
+```{r}
+
+renderPlot({
+  ggplot(data = movements(), mapping = aes(x = Date, y = `%Current`, fill = Direction)) +
+    geom_col(width = 25) +
+    scale_fill_manual(values = c("red", "green")) +
+    theme_bw() +
+    labs(title = paste("Monthly Price movements", input$ticker, sep = ":"), subtitle = "+% indicates that month increased in price")
+})
+```
+
+### Table
+
+```{r}
+# TABLE
+renderTable({dat_wide() %>% select(-`%up`, -`%down`)}) 
+```
+
+
